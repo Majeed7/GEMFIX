@@ -37,7 +37,6 @@ def generate_X(n_samples=100, n_features=10):
     #return np.random.uniform(-1, 1, (n_samples, n_features))
     return np.random.randn(n_samples, n_features)
 
-
 def generate_dataset_poly_sine(n_samples=100, n_features=10):
     X = generate_X(n_samples, n_features)
     
@@ -91,7 +90,6 @@ def generate_XOR(n_samples=100, n_features=10):
         return y
 
     return X, fn(X), fn, np.arange(0,5), "XOR data set"
-
 
 def generate_simple_interactions(n_samples=100, n_features=10):
     X = generate_X(n_samples, n_features)

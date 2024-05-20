@@ -45,6 +45,7 @@ handles, labels = [] , []
 
 # Load Excel file
 datasets = ['text_exp_amazon polarity', 'text_exp_go_emotion', 'text_exp_imdb', 'text_exp_rotten_tomato', 'text_exp_sst2', 'text_exp_yelp_review']
+name = ['Amazon Polarity', 'GoEmotions', 'IMDB', 'Rotten Tomato', 'GLUE SST2', "Yelp Review Full"]
 for i, ds_name in enumerate(datasets):
     file_path = Path(f'results/textual experiment/{ds_name}.xlsx')
     xls = pd.ExcelFile(file_path)
@@ -100,7 +101,7 @@ for i, ds_name in enumerate(datasets):
     xlabels = ['0']
     xlabels.extend(threshold_labels)
     ax1.set_xticklabels(xlabels)
-
+    ax1.set_title(name[i])
 
     # Plotting
     ax2 = axes2[i]
@@ -114,6 +115,8 @@ for i, ds_name in enumerate(datasets):
     error_values = [np.std(item) for item in exec_time]
     box = ax2.boxplot(exec_time, patch_artist=True, notch=False, vert=1, widths=0.4, labels=methods) #methods, mean_values, yerr=error_values, capsize=5, color='skyblue', align='center', alpha=0.7, ecolor='black')
     
+    ax2.set_title(name[i])
+
     import matplotlib.patches as mpatches
 
     # Coloring each box
@@ -125,10 +128,9 @@ for i, ds_name in enumerate(datasets):
     ax2.set_xticklabels(custom_labels)
 
     # # Creating a custom legend
-    if i == 1:
+    if i == 2:
         legend_patches = [mpatches.Patch(color=color, label=label) for color, label in zip(colors, methods)]
-        legend = ax2.legend(handles=legend_patches, loc='upper left', bbox_to_anchor=(0.1, 1.1), ncol=8)
-
+        legend = ax2.legend(handles=legend_patches, loc='upper center', bbox_to_anchor=(1.12, 1.18), ncol=8) 
 
 handles, labels = ax1.get_legend_handles_labels()
 fig1.legend(handles, labels, loc='upper center', ncol=12, frameon=False)

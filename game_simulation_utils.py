@@ -14,6 +14,8 @@ from scipy.linalg import cholesky, cho_solve
 import warnings
 warnings.filterwarnings('ignore')
 
+from sklearn.linear_model import lars_path, LassoLarsIC
+import heapq
 
 ''' 
 Game generation and subset generation/selection
@@ -73,68 +75,40 @@ def exact_Shapley_value(subset_values_mobius, N):
         shapley_values[i] = sum([subset_values_mobius[x] / len(x) for x in subset_values_mobius if frozenset({i+1}).issubset(x)])
     return shapley_values    
 
-# Generate weights used for computing Shapley value
-# def generate_Shapley_weights_by_size(N):
-#     N_fact = factorial(N)
 
-#     # Array to store weights for each subset size, from 0 to N
-#     weights = [0] * (N + 1)
-    
-#     for size in range(N):
-#         # Compute weight based on the size of the subset
-#         if size == 0 or size == N:
-#             # Handle the empty set and the full set cases if necessary
-#             # For Shapley value calculation, these cases are usually not directly used
-#             # but they are included here for completeness
-#             weights[size] = 1 / N
-#         else:
-#             weights[size] = (factorial(size) * factorial(N - size - 1)) / N_fact
-    
-#     return weights
-
-
-# def exact_Shapley_value(subsets_all, subset_values, N, players):
-#     # Initialize Shapley value estimation
-#     shapley_values = {player: 0 for player in players}
-#     shapley_weights = generate_Shapley_weights_by_size(N)
-
-#     # Estimate Shapley values
-#     for player in players:
-#         for subset in subsets_all:
-#             if player not in subset:
-#                 subset_with_player = subset.union([player])
-#                 if subset_with_player in subset_values:
-#                     marginal_contribution = subset_values[subset_with_player] - subset_values.get(subset, 0)
-#                     shapley_values[player] += shapley_weights[len(subset)] * marginal_contribution
-
-#     return list(shapley_values.values())
-
-
-# def Omega(X,i):
-#     n, d = X.shape
-    
-#     idx = np.arange(d)
-#     idx[i] = 0
-#     idx[0] = i
-#     X = X[:,idx]
-    
-#     omega = np.zeros((n,))
-#     ind_nonzeros = np.where(X[:,0] > 0)[0].tolist()
-#     for i in ind_nonzeros:
-#         xi_ones = np.where(X[i,1:] > 0)[0].tolist()
-#         xi_ones_count = len(xi_ones)
-#         temp = 0
-#         for j in range(1,d):
-#             temp += (1 / (j+1)) * (comb(xi_ones_count,j)) 
+def interactions_from_alpha(matrix, values):
+        interactions_dict = {}
         
-#         omega[i] = temp 
-#     omega[ind_nonzeros] = (1 + omega[ind_nonzeros])
-#     return omega
+        # Process each row in the matrix along with its corresponding value
+        for row, value in zip(matrix, values):
+            #if abs(value) < np.mean(np.abs(values)) and abs(value) < 1e-5: continue 
+            if abs(value) < 1e-5: continue 
+
+            n = len(row)
+            indices = [i for i in range(n) if row[i] == 1]                
+            
+            
+            # Generate all subsets for the indices where the row has 1s
+            for size in range(2, len(indices) + 1):
+                for combo in combinations(indices, size):
+                    # Create a set representing the subset
+                    subset_set = frozenset(combo)
+                    
+                    # Add the value to this subset key in the dictionary
+                    if subset_set in interactions_dict:
+                        interactions_dict[subset_set] += value
+                    else:
+                        interactions_dict[subset_set] = value
+
+        return list(interactions_dict.items())
     
+
+
 def gemfix_reg(X, y, sample_weight):
     n, d = X.shape
     inner_prod = np.inner(X,X) # X @ X.T
-    kernel_mat = 2 ** inner_prod - 1
+    lam = 0.001 
+    Omega = (2 ** inner_prod - 1) + lam * np.diag(sample_weight)
 
     sample_set_size = np.array(X @ np.ones((d,)), dtype=int)
     size_weight = np.zeros((d,))
@@ -144,9 +118,7 @@ def gemfix_reg(X, y, sample_weight):
     
     alpha_weight = np.array([size_weight[t-1] if t != 0 else 0 for t in sample_set_size])
     
-    
-    lam = 0.001 
-    L = cholesky(kernel_mat + lam * np.diag(sample_weight) , lower=True)
+    L = cholesky(Omega , lower=True)
     alpha = cho_solve((L, True), y)
 
     shapley_val = np.zeros((d,))
@@ -156,7 +128,48 @@ def gemfix_reg(X, y, sample_weight):
 
     #print(f"the difference between the two shapley vlaue is {np.linalg.norm(shapley_val - shapley_val2, np.inf)}")    
 
-    return shapley_val, alpha
+    ## Compute interactions
+    model = lars_path(Omega, y, method='lasso')
+    coefs = model[2] ## coefficient of the models for different lambda' values
+
+    # select 6 alpha and add the interacting terms as potential interations of the game
+    solution_index = (coefs.shape[1] * np.array([0.05, .1, .2, .3, .4, .5, .7])).astype(int)  # np.array([0.05, .1, .3])).astype(int) #
+    unique_interactions = set()
+
+    for ind in solution_index:
+        ## add all the possible interactions given the feature size
+        interactions = interactions_from_alpha(X, coefs[:,ind])
+        intc_topitems = heapq.nlargest(100, interactions, key=lambda x: abs(x[1])) #interactions.sort(key=lambda x: np.abs(x[1]), reverse=True)
+        
+        for elem in intc_topitems: ## only the first 100 interactions to be added
+            unique_interactions.add(elem[0])
+
+    for i in range(d):
+        unique_interactions.add(frozenset({i}))
+    unique_interactions = list(unique_interactions)
+    unique_interactions.sort(key=lambda x: (len(x), (list(x)[0])))
+
+    ## Second, assigning a value for interacting terms: this is done by...
+    ## add the interacting terms to the self.mat matrix and run a lasso regression to find their contribution 
+    extended_mat = np.zeros( (X.shape[0], len(unique_interactions)) )
+    for i, feature_set in enumerate(unique_interactions):
+        extended_mat[:,i] = np.prod(X[:,list(feature_set)], axis=1)
+    
+    model_extended = LassoLarsIC(criterion='bic').fit(extended_mat, y)
+    nonzero_index = np.where(abs(model_extended.coef_) > 1e-2)[0] #np.nonzero(model_extended.coef_)[0]
+    nonzero_coef = model_extended.coef_[nonzero_index]
+    nonzero_interact  = [unique_interactions[i] for i in nonzero_index]
+
+    sparse_coef = list(zip(nonzero_interact, nonzero_coef))
+
+    selected_item = [item for item in nonzero_interact if len(item) > 1] ## only get the interaction effects, not the main ones
+
+    selected_interactions = list(zip(selected_item, model_extended.coef_[nonzero_index]))
+    selected_interactions.sort(key=lambda x: abs(x[1]), reverse=True)
+
+
+
+    return shapley_val, alpha, selected_interactions
 
 ''' 
 Estimating Shapley Value with Regression
@@ -261,103 +274,6 @@ def gemfix_shapley_calculation(subsets_all, coef, N):
         shapley_mobius.append(np.sum(coef.squeeze()[subsets_indices] * subsets_weight))
 
     return shapley_mobius
-
-class GEMFIX(BaseEstimator, RegressorMixin):
-    """Game Estiamtion of Mobius representation for feature interaction detection and explanation
-
-    Parameters
-    ----------
-    lam : float, default=1.0
-        Regularization parameter. The strength of the regularization is
-        inversely proportional to lam. Must be strictly positive.
-
-    kernel : {'linear', 'rbf'}, default='linear'
-        Specifies the kernel type to be used in the algorithm.
-        It must be 'linear', 'rbf' or a callable.
-
-    gamma : float, default = None
-        Kernel coefficient for 'rbf'
-
-
-    Attributes
-    ----------
-    support_: boolean np.array of shape (n_samples,), default = None
-        Array for support vector selection.
-
-    alpha_ : array-like
-        Weight matrix
-
-    bias_ : array-like
-        Bias vector
-
-
-    """
-
-    def __init__(self, C=1.0):
-        self.C = C
-
-    def fit(self, X, v, sample_weight):
-        """Fit the model according to the given training data.
-        Parameters
-        ----------
-        X : {array-like, sparse matrix} of shape (n_samples, n_features)
-            Training data
-
-        y : array-like of shape (n_samples,) or (n_samples, n_targets)
-            Target values.
-
-        support : boolean np.array of shape (n_samples,), default = None
-            Array for support vector selection.
-
-        Returns
-        -------
-        self : object
-            An instance of the estimator.
-        """
-        self.X_train = X 
-
-        X, v = check_X_y(X, v, multi_output=True, dtype='float')
-
-        n, d = X.shape
-        inner_prod = np.inner(X,X) # X @ X.T
-        self.omega = 2 ** inner_prod - 1
-
-        lam = 1 
-        self.L = cholesky(self.omega + lam * np.diag(sample_weight) , lower=True)
-        self.alpha = cho_solve((self.L, True), v)
-
-        return self
-
-    def predict(self, X):
-        """
-        Predict using the estimator.
-        Parameters
-        ----------
-        X : array-like or sparse matrix, shape (n_samples, n_features)
-            Samples.
-
-        Returns
-        -------
-        y : array-like of shape (n_samples,) or (n_samples, n_targets)
-            Returns predicted values.
-        """
-
-        X = check_array(X, ensure_2d=False)
-        inner_prod = np.inner(self.X_train,X) # X @ X.T
-        omega = 2 ** inner_prod - 1
- 
-        return (K @ self.alpha_) + self.bias_
-
-    def score(self, X, y):
-        from scipy.stats import pearsonr
-        p, _ = pearsonr(y, self.predict(X))
-        return p ** 2
-
-    def norm_weights(self):
-        A = self.alpha_.reshape(-1, 1) @ self.alpha_.reshape(-1, 1).T
-
-        W = A @ self.K_[self.support_, :]
-        return np.sqrt(np.sum(np.diag(W)))
 
 
 if __name__ == '__main__':
